@@ -26,17 +26,20 @@
     { id: 'butter', label: 'Butter Yellow', value: '#fff1b8' }
   ];
 
+  // Pattern frames carry `stripe`/`dots` params mirroring their CSS so the
+  // export can redraw them natively — html2canvas can't render
+  // repeating-linear-gradient or sized radial-gradient backgrounds.
   var STRIPE_PATTERNS = [
-    { id: 'sky-pink',    label: 'Sky Blue + Pink',      css: 'repeating-linear-gradient(45deg,#bfe3ff 0px,#bfe3ff 16px,#ffc4d6 16px,#ffc4d6 32px)' },
-    { id: 'butter-pink', label: 'Butter Yellow + Pink', css: 'repeating-linear-gradient(45deg,#fff1b8 0px,#fff1b8 16px,#ffc4d6 16px,#ffc4d6 32px)' },
-    { id: 'blue-white',  label: 'Blue + White',         css: 'repeating-linear-gradient(45deg,#bfe3ff 0px,#bfe3ff 16px,#ffffff 16px,#ffffff 32px)' }
+    { id: 'sky-pink',    label: 'Sky Blue + Pink',      css: 'repeating-linear-gradient(45deg,#bfe3ff 0px,#bfe3ff 16px,#ffc4d6 16px,#ffc4d6 32px)', stripe: { c1: '#bfe3ff', c2: '#ffc4d6', size: 16 } },
+    { id: 'butter-pink', label: 'Butter Yellow + Pink', css: 'repeating-linear-gradient(45deg,#fff1b8 0px,#fff1b8 16px,#ffc4d6 16px,#ffc4d6 32px)', stripe: { c1: '#fff1b8', c2: '#ffc4d6', size: 16 } },
+    { id: 'blue-white',  label: 'Blue + White',         css: 'repeating-linear-gradient(45deg,#bfe3ff 0px,#bfe3ff 16px,#ffffff 16px,#ffffff 32px)', stripe: { c1: '#bfe3ff', c2: '#ffffff', size: 16 } }
   ];
 
   var DOT_PATTERNS = [
-    { id: 'dot-pink',   label: 'Pink Dots',   css: 'radial-gradient(circle, #ff8fb1 30%, transparent 32%) 0 0/22px 22px, #fff5f8' },
-    { id: 'dot-blue',   label: 'Sky Dots',    css: 'radial-gradient(circle, #5fb6ff 30%, transparent 32%) 0 0/22px 22px, #eef8ff' },
-    { id: 'dot-purple', label: 'Purple Dots', css: 'radial-gradient(circle, #b48bff 30%, transparent 32%) 0 0/22px 22px, #f6f0ff' },
-    { id: 'dot-gold',   label: 'Gold Dots',   css: 'radial-gradient(circle, #f3c969 30%, transparent 32%) 0 0/22px 22px, #fffaf0' }
+    { id: 'dot-pink',   label: 'Pink Dots',   css: 'radial-gradient(circle, #ff8fb1 30%, transparent 32%) 0 0/22px 22px, #fff5f8', dots: { color: '#ff8fb1', bg: '#fff5f8', cell: 22, radius: 5 } },
+    { id: 'dot-blue',   label: 'Sky Dots',    css: 'radial-gradient(circle, #5fb6ff 30%, transparent 32%) 0 0/22px 22px, #eef8ff', dots: { color: '#5fb6ff', bg: '#eef8ff', cell: 22, radius: 5 } },
+    { id: 'dot-purple', label: 'Purple Dots', css: 'radial-gradient(circle, #b48bff 30%, transparent 32%) 0 0/22px 22px, #f6f0ff', dots: { color: '#b48bff', bg: '#f6f0ff', cell: 22, radius: 5 } },
+    { id: 'dot-gold',   label: 'Gold Dots',   css: 'radial-gradient(circle, #f3c969 30%, transparent 32%) 0 0/22px 22px, #fffaf0', dots: { color: '#f3c969', bg: '#fffaf0', cell: 22, radius: 5 } }
   ];
 
   var STICKER_CATEGORIES = [
@@ -441,7 +444,7 @@
       b.title = p.label;
       b.setAttribute('aria-label', p.label);
       b.addEventListener('click', function () {
-        state.frame = { type: 'pattern', css: p.css };
+        state.frame = { type: 'pattern', css: p.css, id: p.id };
         applyFrame();
         $all('.swatch, .pattern-swatch').forEach(function (s) { s.classList.remove('active'); });
         b.classList.add('active');
@@ -726,17 +729,25 @@
     if (window.html2canvas) {
       window.html2canvas(stripCanvas, {
         scale: 3,
-        width: stripCanvas.offsetWidth,
-        height: stripCanvas.offsetHeight,
-        windowWidth: stripCanvas.offsetWidth,
-        windowHeight: stripCanvas.offsetHeight,
         backgroundColor: null,
         useCORS: true,
         allowTaint: true,
-        logging: false
+        logging: false,
+        onclone: function (doc) {
+          var clone = doc.getElementById('strip-canvas');
+          if (!clone) return;
+          // html2canvas renders the neumorphic inset box-shadow as a solid
+          // dark ring around the strip — drop it from the capture.
+          clone.style.boxShadow = 'none';
+          // It also can't render the pattern-frame gradients — blank the
+          // background (leaving it transparent) so the pattern can be
+          // redrawn natively underneath after capture.
+          if (state.frame.type === 'pattern') clone.style.background = 'none';
+        }
       })
         .then(function (canvas) {
-          paintEmojisOnCanvas(canvas, 3);
+          paintOverlaysOnCanvas(canvas);
+          if (state.frame.type === 'pattern') paintPatternFrame(canvas);
           afterCapture(canvas.toDataURL('image/png'));
         })
         .catch(function () { afterCapture(renderFallbackCanvas()); });
@@ -760,38 +771,116 @@
     }
   }
 
-  function paintEmojisOnCanvas(canvas, scale) {
-    if (!state.stickers.length) return;
-    var ctx = canvas.getContext('2d');
-    var W = stripCanvas.offsetWidth;
-    var H = stripCanvas.offsetHeight;
-    var r = 12 * scale; // matches .strip-canvas border-radius
+  // Repaints stickers and text natively onto the captured canvas. Both DOM
+  // layers are hidden during capture (html2canvas misplaces scaled/rotated
+  // elements); painting stickers first, then text, preserves the on-screen
+  // stacking order (.sticker-layer sits below .text-layer).
+  var TEXT_FONTS = {
+    cute:   { weight: '700', family: "'Caveat', cursive" },
+    modern: { weight: '700', family: "'DM Sans', system-ui, sans-serif" },
+    future: { weight: '600', family: "'Orbitron', sans-serif", spacing: 0.05 }
+  };
 
-    // Clip to the strip's own rounded bounds so stickers dragged near an
-    // edge or scaled up can never bleed outside the frame in the export.
+  function paintOverlaysOnCanvas(canvas) {
+    if (!state.stickers.length && !state.texts.length) return;
+    var ctx = canvas.getContext('2d');
+    // html2canvas leaves the context transform however the last element it
+    // drew left it (not identity) — reset before doing our own coordinate math.
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    var k = canvas.width / stripCanvas.offsetWidth;
+    var w = canvas.width, h = canvas.height;
+    var r = 12 * k; // matches .strip-canvas border-radius
+
+    // Clip to the strip's rounded bounds so overlays dragged near an edge
+    // can never bleed outside the frame in the export.
     ctx.save();
     ctx.beginPath();
     ctx.moveTo(r, 0);
-    ctx.arcTo(W * scale, 0, W * scale, H * scale, r);
-    ctx.arcTo(W * scale, H * scale, 0, H * scale, r);
-    ctx.arcTo(0, H * scale, 0, 0, r);
-    ctx.arcTo(0, 0, W * scale, 0, r);
+    ctx.arcTo(w, 0, w, h, r);
+    ctx.arcTo(w, h, 0, h, r);
+    ctx.arcTo(0, h, 0, 0, r);
+    ctx.arcTo(0, 0, w, 0, r);
     ctx.closePath();
     ctx.clip();
 
     state.stickers.forEach(function (st) {
-      var x = (st.xPct / 100) * W * scale;
-      var y = (st.yPct / 100) * H * scale;
-      var fontSize = Math.round(35 * scale * st.scale);
       ctx.save();
-      ctx.translate(x, y);
+      ctx.translate((st.xPct / 100) * w, (st.yPct / 100) * h);
       ctx.rotate((st.rotation * Math.PI) / 180);
-      ctx.font = fontSize + 'px serif';
+      ctx.font = Math.round(35.2 * k * st.scale) + 'px serif'; // 2.2rem, as on screen
       ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(st.emoji, 0, 0);
+      ctx.textBaseline = 'alphabetic';
+      // Center the actual glyph bounds on the anchor point, matching where
+      // the emoji visually sits in its flex-centered DOM box.
+      var m = ctx.measureText(st.emoji);
+      ctx.fillText(st.emoji, 0, (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2);
       ctx.restore();
     });
+
+    state.texts.forEach(function (tx) {
+      var f = TEXT_FONTS[tx.font] || TEXT_FONTS.modern;
+      var size = tx.size * k;
+      ctx.save();
+      ctx.font = f.weight + ' ' + size + 'px ' + f.family;
+      if (f.spacing && 'letterSpacing' in ctx) ctx.letterSpacing = (size * f.spacing) + 'px';
+      ctx.fillStyle = tx.color;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(tx.text, (tx.xPct / 100) * w, (tx.yPct / 100) * h);
+      ctx.restore();
+    });
+
+    ctx.restore();
+  }
+
+  // Redraws the selected pattern frame natively beneath the captured strip.
+  // The capture leaves the frame area transparent (see onclone above), so
+  // painting with 'destination-over' fills exactly that area.
+  function paintPatternFrame(canvas) {
+    var p = STRIPE_PATTERNS.concat(DOT_PATTERNS).find(function (q) { return q.id === state.frame.id; });
+    if (!p) return;
+    var ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    var k = canvas.width / stripCanvas.offsetWidth;
+    var w = canvas.width, h = canvas.height;
+    var r = 12 * k; // matches .strip-canvas border-radius
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(r, 0);
+    ctx.arcTo(w, 0, w, h, r);
+    ctx.arcTo(w, h, 0, h, r);
+    ctx.arcTo(0, h, 0, 0, r);
+    ctx.arcTo(0, 0, w, 0, r);
+    ctx.closePath();
+    ctx.clip();
+    ctx.globalCompositeOperation = 'destination-over';
+
+    if (p.stripe) {
+      var sw = p.stripe.size * k;
+      var diag = Math.sqrt(w * w + h * h);
+      ctx.translate(w / 2, h / 2);
+      ctx.rotate(-Math.PI / 4); // 45° stripes, matching the CSS gradient
+      var n = Math.ceil(diag / sw) + 1;
+      for (var i = -n; i <= n; i++) {
+        ctx.fillStyle = ((i % 2) + 2) % 2 === 0 ? p.stripe.c1 : p.stripe.c2;
+        ctx.fillRect(i * sw, -diag, sw, diag * 2);
+      }
+    } else if (p.dots) {
+      // destination-over paints *behind* what's already there, so draw the
+      // dots first and the background color after (it lands behind the dots).
+      var cell = p.dots.cell * k, rad = p.dots.radius * k;
+      ctx.fillStyle = p.dots.color;
+      for (var y = cell / 2; y < h; y += cell) {
+        for (var x = cell / 2; x < w; x += cell) {
+          ctx.beginPath();
+          ctx.arc(x, y, rad, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      ctx.fillStyle = p.dots.bg;
+      ctx.fillRect(0, 0, w, h);
+    }
 
     ctx.restore();
   }

@@ -1482,15 +1482,7 @@ function generateExportImage(){
   }
 
   if(window.html2canvas){
-    window.html2canvas(stripCanvas, {
-      scale: 3,
-      width: stripCanvas.offsetWidth,
-      height: stripCanvas.offsetHeight,
-      windowWidth: stripCanvas.offsetWidth,
-      windowHeight: stripCanvas.offsetHeight,
-      backgroundColor: null,
-      useCORS: true
-    })
+    window.html2canvas(stripCanvas, { scale:3, backgroundColor:null, useCORS:true })
       .then(function(canvas){ finish(canvas.toDataURL('image/png')); })
       .catch(function(){ finish(renderFallbackCanvas()); });
   } else {

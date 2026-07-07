@@ -840,7 +840,10 @@ img { display: block; max-width: 100%; }
 .strip-canvas.export-mode .handle,
 .strip-canvas.export-mode .elem-delete { display: none !important; }
 .strip-canvas.export-mode .selected { outline: none !important; }
-.strip-canvas.export-mode .sticker-layer { visibility: hidden !important; }
+/* Stickers and text are repainted natively onto the export canvas —
+   html2canvas misplaces scaled/rotated elements, so keep both out of it. */
+.strip-canvas.export-mode .sticker-layer,
+.strip-canvas.export-mode .text-layer { visibility: hidden !important; }
 
 .strip-actions { display: flex; gap: 12px; }
 
